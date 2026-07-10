@@ -574,7 +574,7 @@ interface ProjectType {
 }
 
 /** Detect project type from root markers */
-function detectProjectType(cwd: string): ProjectType {
+async function detectProjectType(cwd: string, signal?: AbortSignal): Promise<ProjectType> {
 	// Check for Rust (Cargo.toml)
 	if (fs.existsSync(path.join(cwd, "Cargo.toml"))) {
 		return { type: "rust", command: ["cargo", "check", "--message-format=short"], description: "Rust (cargo check)" };
@@ -585,7 +585,27 @@ function detectProjectType(cwd: string): ProjectType {
 		return { type: "typescript", command: ["npx", "tsc", "--noEmit"], description: "TypeScript (tsc --noEmit)" };
 	}
 
-	// Check for Go (go.mod)
+	// Check for a Go workspace first: at a workspace root, `go build ./...`
+	// only covers packages of the module containing "." (root go.mod present)
+	// or fails outright ("directory prefix . does not contain modules listed
+	// in go.work" without one) — either way missing other `use` modules. So
+	// enumerate the modules structurally and build each as a directory-prefixed
+	// package pattern.
+	if (fs.existsSync(path.join(cwd, "go.work"))) {
+		const useDirs = await readGoWorkUseDirs(cwd, signal);
+		if (useDirs.length > 0) {
+			return {
+				type: "go",
+				command: ["go", "build", ...useDirs.map(dir => `${dir.replace(/[\\/]+$/, "")}/...`)],
+				description: "Go workspace (go build)",
+			};
+		}
+		// Enumeration failed (go missing or malformed go.work): let `go build`
+		// surface its own workspace error instead of claiming an unknown project.
+		return { type: "go", command: ["go", "build", "./..."], description: "Go workspace (go build)" };
+	}
+
+	// Check for Go module (go.mod)
 	if (fs.existsSync(path.join(cwd, "go.mod"))) {
 		return { type: "go", command: ["go", "build", "./..."], description: "Go (go build)" };
 	}
@@ -598,16 +618,61 @@ function detectProjectType(cwd: string): ProjectType {
 	return { type: "unknown", description: "Unknown project type" };
 }
 
+/** Enumerate `use` directories from go.work via `go work edit -json`. Returns
+ *  an empty array when the go binary is unavailable or the output is not the
+ *  documented `{ Use: [{ DiskPath }] }` shape; the caller then falls back to
+ *  `go build ./...`, which reports go's own (accurate) workspace error. */
+async function readGoWorkUseDirs(cwd: string, signal?: AbortSignal): Promise<string[]> {
+	try {
+		const proc = Bun.spawn(["go", "work", "edit", "-json", path.join(cwd, "go.work")], {
+			cwd,
+			stdout: "pipe",
+			stderr: "pipe",
+			windowsHide: true,
+		});
+		const abortHandler = () => {
+			proc.kill();
+		};
+		signal?.addEventListener("abort", abortHandler, { once: true });
+		try {
+			const [stdout, stderr] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			throwIfAborted(signal);
+			if (proc.exitCode !== 0) {
+				logger.debug("go work edit -json failed; falling back to go build ./...", { cwd, stderr: stderr.trim() });
+				return [];
+			}
+			const parsed = JSON.parse(stdout) as { Use?: Array<{ DiskPath?: unknown }> };
+			if (!Array.isArray(parsed.Use)) return [];
+			return parsed.Use.map(entry => entry?.DiskPath).filter(
+				(dir): dir is string => typeof dir === "string" && dir.length > 0,
+			);
+		} finally {
+			signal?.removeEventListener("abort", abortHandler);
+		}
+	} catch (error) {
+		if (signal?.aborted) throw new ToolAbortError();
+		logger.debug("go work enumeration failed; falling back to go build ./...", {
+			cwd,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return [];
+	}
+}
+
 /** Run workspace diagnostics command and parse output */
 async function runWorkspaceDiagnostics(
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<{ output: string; projectType: ProjectType }> {
 	throwIfAborted(signal);
-	const projectType = detectProjectType(cwd);
+	const projectType = await detectProjectType(cwd, signal);
 	if (!projectType.command) {
 		return {
-			output: `Cannot detect project type. Supported: Rust (Cargo.toml), TypeScript (tsconfig.json), Go (go.mod), Python (pyproject.toml)`,
+			output: `Cannot detect project type. Supported: Rust (Cargo.toml), TypeScript (tsconfig.json), Go (go.mod, go.work), Python (pyproject.toml)`,
 			projectType,
 		};
 	}
