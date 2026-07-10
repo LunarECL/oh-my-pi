@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, isRecord, logger, pathIsWithin } from "@oh-my-pi/pi-utils";
+import { $which, isRecord, logger, pathIsWithin, WhichCachePolicy } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { getConfigDirPaths } from "../config";
 import { type ClaudePluginRoot, getPreloadedPluginRoots } from "../discovery/helpers";
@@ -202,18 +202,28 @@ export function hasRootMarkers(cwd: string, markers: string[]): boolean {
 }
 
 /**
- * Check whether any ancestor directory of a file is an LSP project root.
+ * Check whether `startDir` or any of its ancestor directories contains a root
+ * marker. Unlike {@link hasRootMarkerAncestor} the walk includes `startDir`
+ * itself, so directory-shaped launch targets (e.g. a Go package directory
+ * whose own `go.mod` marks the module root) match too.
  */
-export function hasRootMarkerAncestor(filePath: string, markers: string[]): boolean {
+export function hasRootMarkersInAncestry(startDir: string, markers: string[]): boolean {
 	if (markers.length === 0) return false;
 
-	let dir = path.dirname(path.resolve(filePath));
+	let dir = path.resolve(startDir);
 	while (true) {
 		if (hasRootMarkers(dir, markers)) return true;
 		const parent = path.dirname(dir);
 		if (parent === dir) return false;
 		dir = parent;
 	}
+}
+
+/**
+ * Check whether any ancestor directory of a file is an LSP project root.
+ */
+export function hasRootMarkerAncestor(filePath: string, markers: string[]): boolean {
+	return hasRootMarkersInAncestry(path.dirname(path.resolve(filePath)), markers);
 }
 
 // =============================================================================
@@ -249,7 +259,7 @@ const LOCAL_BIN_PATHS: Array<{ markers: string[]; binDir: string }> = [
 	{ markers: ["Gemfile", "Gemfile.lock"], binDir: "vendor/bundle/bin" },
 	{ markers: ["Gemfile", "Gemfile.lock"], binDir: "bin" },
 	// Go - check project-local bin
-	{ markers: ["go.mod", "go.sum"], binDir: "bin" },
+	{ markers: ["go.mod", "go.work", "go.sum"], binDir: "bin" },
 ];
 
 const WINDOWS_LOCAL_EXECUTABLE_EXTENSIONS = [".exe", ".cmd", ".bat"] as const;
@@ -273,9 +283,11 @@ function resolveLocalCommand(basePath: string): string | null {
  *
  * @param command - The command name (e.g., "typescript-language-server")
  * @param cwd - Working directory to search from
+ * @param options - `fresh` bypasses the negative `$which` cache so a binary
+ *   installed mid-session is picked up without a restart
  * @returns Absolute path to the executable, or null if not found
  */
-export function resolveCommand(command: string, cwd: string): string | null {
+export function resolveCommand(command: string, cwd: string, options?: { fresh?: boolean }): string | null {
 	// Check local bin directories based on project markers
 	for (const { markers, binDir } of LOCAL_BIN_PATHS) {
 		if (hasRootMarkers(cwd, markers)) {
@@ -288,6 +300,9 @@ export function resolveCommand(command: string, cwd: string): string | null {
 	}
 
 	// Fall back to $PATH
+	if (options?.fresh) {
+		return $which(command, { cache: WhichCachePolicy.Fresh });
+	}
 	return $which(command);
 }
 

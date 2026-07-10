@@ -12,6 +12,7 @@ import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import {
+	ADAPTER_INSTALL_HINTS,
 	type DapBreakpointRecord,
 	type DapCapabilities,
 	type DapContinueOutcome,
@@ -35,7 +36,7 @@ import {
 	type LaunchProgramKind,
 	resolveLaunchOverrides,
 	selectAttachAdapter,
-	selectLaunchAdapter,
+	selectLaunchAdapterResult,
 } from "../dap";
 import type { Theme } from "../modes/theme/theme";
 import debugDescription from "../prompts/tools/debug.md" with { type: "text" };
@@ -108,7 +109,9 @@ const debugSchema = type({
 	action: debugActionSchema,
 	"program?": type("string").describe("program path"),
 	"args?": type("string[]").describe("program arguments"),
-	"adapter?": type("string").describe("debugger adapter (gdb, lldb-dap, debugpy, dlv)"),
+	"adapter?": type("string").describe(
+		"configured debugger adapter id (e.g. gdb, lldb-dap, debugpy, dlv, or any dap.json entry)",
+	),
 	cwd: "string?",
 	"file?": type("string").describe("source file"),
 	"line?": type("number").describe("source line"),
@@ -515,7 +518,7 @@ function validateLaunchProgram(
 	if (programKind !== "directory" || adapter.acceptsDirectoryProgram) return;
 	const displayPath = formatPathRelativeToCwd(program, cwd, { trailingSlash: true });
 	throw new ToolError(
-		`launch program resolves to a directory: ${displayPath}. Pass an executable file path, or for Python use adapter "debugpy" with program set to the .py file.`,
+		`launch program resolves to a directory: ${displayPath}. Pass an executable file path, or use an adapter that accepts directory programs (dlv debugs a Go package directory; for Python pass the .py file with adapter "debugpy").`,
 	);
 }
 
@@ -711,15 +714,33 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				const commandCwd = params.cwd ? resolveToCwd(params.cwd, this.session.cwd) : this.session.cwd;
 				const program = resolveToCwd(params.program, commandCwd);
 				const programKind = await classifyLaunchProgram(program);
-				const adapter = selectLaunchAdapter(program, commandCwd, params.adapter, programKind);
-				if (!adapter) {
-					if (params.adapter === "debugpy") {
+				const selection = selectLaunchAdapterResult(program, commandCwd, params.adapter, programKind);
+				if (selection.kind !== "adapter") {
+					if (
+						params.adapter === "debugpy" ||
+						(selection.kind === "unavailable" && selection.adapterName === "debugpy")
+					) {
 						throw new ToolError("adapter 'debugpy' is not available: python not found in PATH");
+					}
+					if (selection.kind === "unavailable") {
+						// The install hint only helps when the adapter still points at its
+						// canonical command; a dap.json override pinning another path needs
+						// a config fix, not a reinstall.
+						const hint =
+							selection.command === selection.adapterName
+								? ADAPTER_INSTALL_HINTS[selection.adapterName]
+								: undefined;
+						throw new ToolError(
+							hint
+								? `adapter '${selection.adapterName}' matches this program but is not installed: install with '${hint}'`
+								: `adapter '${selection.adapterName}' matches this program but its configured executable was not found; check the '${selection.adapterName}' entry in your DAP configuration`,
+						);
 					}
 					throw new ToolError(
 						`No debugger adapter available. Installed adapters: ${getConfiguredAdapters(commandCwd)}`,
 					);
 				}
+				const adapter = selection.adapter;
 				validateLaunchProgram(program, commandCwd, programKind, adapter);
 				const extraLaunchArguments = resolveLaunchOverrides(adapter, program, programKind);
 				const snapshot = await dapSessionManager.launch(

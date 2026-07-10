@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAdapterConfigs, resolveAdapter, selectLaunchAdapter } from "../../src/dap/config";
+import {
+	getAdapterConfigs,
+	resolveAdapter,
+	selectLaunchAdapter,
+	selectLaunchAdapterResult,
+} from "../../src/dap/config";
 import { injectPluginDirRoots } from "../../src/discovery/helpers";
 
 const tempDirs: string[] = [];
@@ -194,5 +199,102 @@ describe("DAP adapter configuration", () => {
 		const config = getAdapterConfigs(cwd);
 		expect(config["missing-command"]).toBeUndefined();
 		expect(config.valid?.command).toBe("bun");
+	});
+});
+
+describe("launch adapter selection with missing or nested adapters", () => {
+	/** dap.json override pinning dlv to an absolute command path keeps these
+	 *  tests deterministic: resolution succeeds/fails based on that exact file,
+	 *  independent of a host-installed dlv, PATH, or $which cache state. */
+	async function writeDlvOverride(cwd: string, command: string): Promise<void> {
+		await fs.writeFile(path.join(cwd, "dap.json"), JSON.stringify({ adapters: { dlv: { command } } }));
+	}
+
+	it("reports a configured-but-missing dlv for .go programs instead of falling back to another debugger", async () => {
+		const cwd = await makeTempDir("omp-dap-go-missing-");
+		await fs.writeFile(path.join(cwd, "go.mod"), "module example.com/hello\n\ngo 1.22\n");
+		await fs.writeFile(path.join(cwd, "main.go"), "package main\nfunc main() {}\n");
+		const missingCommand = path.join(cwd, "tools", "dlv");
+		await writeDlvOverride(cwd, missingCommand);
+
+		const selected = selectLaunchAdapterResult("main.go", cwd, undefined, "file");
+		expect(selected).toEqual({ kind: "unavailable", adapterName: "dlv", command: missingCommand });
+		// The compatibility selector reports the same situation as "no adapter"
+		// instead of silently picking an unrelated debugger.
+		expect(selectLaunchAdapter("main.go", cwd, undefined, "file")).toBeNull();
+	});
+
+	it("reports a configured-but-missing dlv for Go package directories instead of a directory rejection", async () => {
+		const cwd = await makeTempDir("omp-dap-go-missing-dir-");
+		await fs.writeFile(path.join(cwd, "go.mod"), "module example.com/hello\n\ngo 1.22\n");
+		await fs.mkdir(path.join(cwd, "cmd", "hello"), { recursive: true });
+		const missingCommand = path.join(cwd, "tools", "dlv");
+		await writeDlvOverride(cwd, missingCommand);
+
+		const selected = selectLaunchAdapterResult(path.join("cmd", "hello"), cwd, undefined, "directory");
+		expect(selected).toEqual({ kind: "unavailable", adapterName: "dlv", command: missingCommand });
+	});
+
+	it("selects dlv for a package directory in a nested module below the session cwd", async () => {
+		const cwd = await makeTempDir("omp-dap-go-nested-");
+		await fs.mkdir(path.join(cwd, "services", "foo", "cmd", "server"), { recursive: true });
+		await fs.writeFile(path.join(cwd, "services", "foo", "go.mod"), "module example.com/foo\n\ngo 1.22\n");
+		await writeDlvOverride(cwd, process.execPath);
+
+		const selected = selectLaunchAdapterResult(
+			path.join("services", "foo", "cmd", "server"),
+			cwd,
+			undefined,
+			"directory",
+		);
+		expect(selected).toMatchObject({ kind: "adapter", adapter: { name: "dlv" } });
+	});
+
+	it("matches root markers inside the launched directory itself", async () => {
+		const cwd = await makeTempDir("omp-dap-go-selfroot-");
+		await fs.mkdir(path.join(cwd, "mod"), { recursive: true });
+		await fs.writeFile(path.join(cwd, "mod", "go.mod"), "module example.com/mod\n\ngo 1.22\n");
+		await writeDlvOverride(cwd, process.execPath);
+
+		const selected = selectLaunchAdapterResult("mod", cwd, undefined, "directory");
+		expect(selected).toMatchObject({ kind: "adapter", adapter: { name: "dlv" } });
+	});
+
+	it("resolves an adapter installed after a failed attempt within the same session", async () => {
+		const cwd = await makeTempDir("omp-dap-go-recovery-");
+		await fs.writeFile(path.join(cwd, "go.mod"), "module example.com/hello\n\ngo 1.22\n");
+		await fs.writeFile(path.join(cwd, "main.go"), "package main\nfunc main() {}\n");
+		const command = path.join(cwd, "tools", process.platform === "win32" ? "dlv.cmd" : "dlv");
+		await writeDlvOverride(cwd, command);
+
+		expect(selectLaunchAdapterResult("main.go", cwd, undefined, "file")).toEqual({
+			kind: "unavailable",
+			adapterName: "dlv",
+			command,
+		});
+
+		// "Install" the adapter at the exact configured path and retry without
+		// restarting: the lookup must not serve the earlier negative result.
+		await fs.mkdir(path.dirname(command), { recursive: true });
+		await fs.writeFile(command, "");
+		await fs.chmod(command, 0o755);
+
+		expect(selectLaunchAdapterResult("main.go", cwd, undefined, "file")).toMatchObject({
+			kind: "adapter",
+			adapter: { name: "dlv" },
+		});
+	});
+
+	it("reports an explicitly requested configured adapter as unavailable when its binary is missing", async () => {
+		const cwd = await makeTempDir("omp-dap-go-explicit-");
+		const missingCommand = path.join(cwd, "tools", "dlv");
+		await writeDlvOverride(cwd, missingCommand);
+
+		expect(selectLaunchAdapterResult("main.go", cwd, "dlv", "file")).toEqual({
+			kind: "unavailable",
+			adapterName: "dlv",
+			command: missingCommand,
+		});
+		expect(selectLaunchAdapterResult("main.go", cwd, "no-such-adapter", "file")).toEqual({ kind: "none" });
 	});
 });

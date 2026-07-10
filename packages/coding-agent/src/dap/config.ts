@@ -5,7 +5,7 @@ import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { getConfigDirPaths } from "../config";
 import { getPreloadedPluginRoots } from "../discovery/helpers";
-import { hasRootMarkers, resolveCommand } from "../lsp/config";
+import { hasRootMarkers, hasRootMarkersInAncestry, resolveCommand } from "../lsp/config";
 import DEFAULTS from "./defaults.json" with { type: "json" };
 import type { DapAdapterConfig, DapResolvedAdapter } from "./types";
 
@@ -191,7 +191,9 @@ function resolveAdapterFromConfig(
 ): DapResolvedAdapter | null {
 	const config = configs[adapterName];
 	if (!config) return null;
-	const resolvedCommand = resolveCommand(normalizeCommandForCwd(config.command, cwd), cwd);
+	// Fresh lookup: debug launches are rare and interactive, and a cached
+	// negative would otherwise require a restart after installing an adapter.
+	const resolvedCommand = resolveCommand(normalizeCommandForCwd(config.command, cwd), cwd, { fresh: true });
 	if (!resolvedCommand) return null;
 	return {
 		name: adapterName,
@@ -219,33 +221,109 @@ export function getAvailableAdapters(cwd: string): DapResolvedAdapter[] {
 		.filter((adapter): adapter is DapResolvedAdapter => adapter !== null);
 }
 
-function getMatchingAdapters(program: string, cwd: string): DapResolvedAdapter[] {
-	const extension = path.extname(program).toLowerCase();
-	const available = getAvailableAdapters(cwd);
-	if (!extension) {
-		// For extensionless binaries, only consider native debuggers (gdb, lldb-dap)
-		// or adapters that match by root markers. Don't silently fall back to
-		// unrelated adapters like debugpy for a C binary.
-		const nativeDebuggers: ReadonlySet<string> = new Set(EXTENSIONLESS_DEBUGGER_ORDER);
-		return available.filter(
-			adapter =>
-				nativeDebuggers.has(adapter.name) ||
-				(adapter.rootMarkers.length > 0 && hasRootMarkers(cwd, adapter.rootMarkers)),
-		);
-	}
-	const exactMatches = available.filter(adapter => adapter.fileTypes.includes(extension));
-	if (exactMatches.length > 0) {
-		return exactMatches;
-	}
-	return available;
+/** Install commands for well-known adapters, surfaced when a matching adapter
+ *  is configured but its binary is missing. debugpy is intentionally absent:
+ *  its command is `python`, so a resolution failure means Python itself is
+ *  missing (the pip-module hint lives in the runtime failure mapper). */
+export const ADAPTER_INSTALL_HINTS: Record<string, string> = {
+	dlv: "go install github.com/go-delve/delve/cmd/dlv@latest",
+	rdbg: "gem install debug",
+};
+
+/** Launch adapter selection outcome. `unavailable` names a configured adapter
+ *  that matches the program (by file type, or directory-capability + root
+ *  markers) whose binary did not resolve — callers surface a targeted install
+ *  error instead of silently falling back to an unrelated debugger. */
+export type LaunchAdapterSelection =
+	| { kind: "adapter"; adapter: DapResolvedAdapter }
+	| { kind: "unavailable"; adapterName: string; command: string }
+	| { kind: "none" };
+
+/** Root markers match when found in the program's ancestor chain (nested
+ *  modules in monorepos) or at the session cwd (historical behavior). */
+function adapterRootMatches(rootMarkers: string[] | undefined, cwd: string, anchorDir: string): boolean {
+	if (!rootMarkers || rootMarkers.length === 0) return false;
+	return hasRootMarkersInAncestry(anchorDir, rootMarkers) || hasRootMarkers(cwd, rootMarkers);
 }
 
-function sortAdaptersForLaunch(program: string, cwd: string, adapters: DapResolvedAdapter[]): DapResolvedAdapter[] {
+function selectAutoLaunchAdapter(program: string, cwd: string, programKind: LaunchProgramKind): LaunchAdapterSelection {
+	const configs = getAdapterConfigs(cwd);
+	const available = Object.keys(configs)
+		.map(name => resolveAdapterFromConfig(name, configs, cwd))
+		.filter((adapter): adapter is DapResolvedAdapter => adapter !== null);
+	// Root-marker searches anchor at the program itself when it is a directory
+	// (its own go.mod counts), else at its parent; relative programs resolve
+	// against the launch cwd.
+	const absoluteProgram = path.resolve(cwd, program);
+	const anchorDir = programKind === "directory" ? absoluteProgram : path.dirname(absoluteProgram);
+	const extension = path.extname(program).toLowerCase();
+
+	if (extension) {
+		const resolvedExact = available.filter(adapter => adapter.fileTypes.includes(extension));
+		if (resolvedExact.length > 0) {
+			const adapter = sortAdaptersForLaunch(program, cwd, anchorDir, resolvedExact)[0];
+			return adapter ? { kind: "adapter", adapter } : { kind: "none" };
+		}
+		// A configured adapter covers this extension but its binary is missing:
+		// report it instead of falling back to an unrelated debugger (e.g.
+		// lldb-dap silently "debugging" main.go when dlv is not installed).
+		const configuredExact = Object.entries(configs).filter(([, config]) =>
+			(config.fileTypes ?? []).includes(extension),
+		);
+		if (configuredExact.length > 0) {
+			const rootMatched = configuredExact.filter(([, config]) =>
+				adapterRootMatches(config.rootMarkers, cwd, anchorDir),
+			);
+			const [adapterName, config] = (rootMatched.length > 0 ? rootMatched : configuredExact)[0];
+			return { kind: "unavailable", adapterName, command: config.command };
+		}
+		// Unknown extension: preserve historical behavior and consider everything.
+		const adapter = sortAdaptersForLaunch(program, cwd, anchorDir, available)[0];
+		return adapter ? { kind: "adapter", adapter } : { kind: "none" };
+	}
+
+	// For extensionless binaries and directories, only consider native debuggers
+	// (gdb, lldb-dap) or adapters whose root markers match the program/session.
+	// Don't silently fall back to unrelated adapters like debugpy for a C binary.
+	const matches = available.filter(
+		adapter =>
+			(EXTENSIONLESS_DEBUGGER_ORDER as readonly string[]).includes(adapter.name) ||
+			adapterRootMatches(adapter.rootMarkers, cwd, anchorDir),
+	);
+	if (programKind === "directory") {
+		const directoryCapable = matches.filter(adapter => adapter.acceptsDirectoryProgram);
+		if (directoryCapable.length > 0) {
+			const adapter = sortAdaptersForLaunch(program, cwd, anchorDir, directoryCapable)[0];
+			return adapter ? { kind: "adapter", adapter } : { kind: "none" };
+		}
+		const configuredCapable = Object.entries(configs).filter(
+			([name, config]) =>
+				config.acceptsDirectoryProgram === true &&
+				adapterRootMatches(config.rootMarkers, cwd, anchorDir) &&
+				!available.some(adapter => adapter.name === name),
+		);
+		if (configuredCapable.length > 0) {
+			const [adapterName, config] = configuredCapable[0];
+			return { kind: "unavailable", adapterName, command: config.command };
+		}
+		// No directory-capable adapter anywhere: fall through so the launch
+		// validation surfaces the directory rejection with the sorted pick.
+	}
+	const adapter = sortAdaptersForLaunch(program, cwd, anchorDir, matches)[0];
+	return adapter ? { kind: "adapter", adapter } : { kind: "none" };
+}
+
+function sortAdaptersForLaunch(
+	program: string,
+	cwd: string,
+	anchorDir: string,
+	adapters: DapResolvedAdapter[],
+): DapResolvedAdapter[] {
 	const extension = path.extname(program).toLowerCase();
 	const rootAware = adapters.map(adapter => ({
 		adapter,
 		hasExtensionMatch: extension.length > 0 && adapter.fileTypes.includes(extension),
-		hasRootMatch: adapter.rootMarkers.length > 0 && hasRootMarkers(cwd, adapter.rootMarkers),
+		hasRootMatch: adapterRootMatches(adapter.rootMarkers, cwd, anchorDir),
 	}));
 	rootAware.sort((left, right) => {
 		if (left.hasExtensionMatch !== right.hasExtensionMatch) {
@@ -270,20 +348,36 @@ function sortAdaptersForLaunch(program: string, cwd: string, adapters: DapResolv
 	return rootAware.map(entry => entry.adapter);
 }
 
+/** Detailed launch adapter selection. Prefer this over
+ *  {@link selectLaunchAdapter} when the caller can surface the
+ *  `unavailable` state (configured adapter with a missing binary). */
+export function selectLaunchAdapterResult(
+	program: string,
+	cwd: string,
+	adapterName?: string,
+	programKind: LaunchProgramKind = "file",
+): LaunchAdapterSelection {
+	if (adapterName) {
+		const adapter = resolveAdapter(adapterName, cwd);
+		if (adapter) return { kind: "adapter", adapter };
+		const config = getAdapterConfigs(cwd)[adapterName];
+		return config ? { kind: "unavailable", adapterName, command: config.command } : { kind: "none" };
+	}
+	return selectAutoLaunchAdapter(program, cwd, programKind);
+}
+
+/** Compatibility selector returning the resolved adapter or null. Unlike the
+ *  historical behavior, a program whose configured adapter is merely not
+ *  installed yields null instead of silently falling back to an unrelated
+ *  debugger — use {@link selectLaunchAdapterResult} to distinguish that case. */
 export function selectLaunchAdapter(
 	program: string,
 	cwd: string,
 	adapterName?: string,
 	programKind: LaunchProgramKind = "file",
 ): DapResolvedAdapter | null {
-	if (adapterName) {
-		return resolveAdapter(adapterName, cwd);
-	}
-	const matches = getMatchingAdapters(program, cwd);
-	const candidates =
-		programKind === "directory" ? matches.filter(adapter => adapter.acceptsDirectoryProgram) : matches;
-	const sorted = sortAdaptersForLaunch(program, cwd, candidates.length > 0 ? candidates : matches);
-	return sorted[0] ?? null;
+	const selection = selectLaunchAdapterResult(program, cwd, adapterName, programKind);
+	return selection.kind === "adapter" ? selection.adapter : null;
 }
 
 export function selectAttachAdapter(cwd: string, adapterName?: string, port?: number): DapResolvedAdapter | null {

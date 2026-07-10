@@ -489,7 +489,10 @@ describe("DAP launch failure handling", () => {
 
 describe("DebugTool launch validation", () => {
 	it("rejects directory programs when the selected adapter cannot debug a directory", async () => {
-		const launchSpy = spyOn(dapModule, "selectLaunchAdapter").mockReturnValue(TEST_ADAPTER);
+		const launchSpy = spyOn(dapModule, "selectLaunchAdapterResult").mockReturnValue({
+			kind: "adapter",
+			adapter: TEST_ADAPTER,
+		});
 		try {
 			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-program-"));
 			try {
@@ -523,7 +526,10 @@ describe("DebugTool launch validation", () => {
 			launchDefaults: { request: "launch", mode: "debug", stopOnEntry: true },
 			acceptsDirectoryProgram: true,
 		};
-		const launchSpy = spyOn(dapModule, "selectLaunchAdapter").mockReturnValue(dlvAdapter);
+		const launchSpy = spyOn(dapModule, "selectLaunchAdapterResult").mockReturnValue({
+			kind: "adapter",
+			adapter: dlvAdapter,
+		});
 		const sessionLaunchSpy = spyOn(dapModule.dapSessionManager, "launch").mockImplementation(async opts => {
 			throw Object.assign(new Error("captured launch"), { capturedOptions: opts });
 		});
@@ -603,7 +609,10 @@ describe("DebugTool launch validation", () => {
 			launchDefaults: { request: "launch", mode: "debug", stopOnEntry: true },
 			acceptsDirectoryProgram: true,
 		};
-		const launchSpy = spyOn(dapModule, "selectLaunchAdapter").mockReturnValue(dlvAdapter);
+		const launchSpy = spyOn(dapModule, "selectLaunchAdapterResult").mockReturnValue({
+			kind: "adapter",
+			adapter: dlvAdapter,
+		});
 		const sessionLaunchSpy = spyOn(dapModule.dapSessionManager, "launch").mockImplementation(async opts => {
 			throw Object.assign(new Error("captured launch"), { capturedOptions: opts });
 		});
@@ -635,7 +644,7 @@ describe("DebugTool launch validation", () => {
 	});
 
 	it("throws targeted 'python not found in PATH' when adapter:'debugpy' is unresolvable for launch", async () => {
-		const launchSpy = spyOn(dapModule, "selectLaunchAdapter").mockReturnValue(null);
+		const launchSpy = spyOn(dapModule, "selectLaunchAdapterResult").mockReturnValue({ kind: "none" });
 		try {
 			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-debugpy-"));
 			try {
@@ -686,7 +695,7 @@ describe("DebugTool launch validation", () => {
 	});
 
 	it("falls back to the generic 'No debugger adapter' error when adapter is unspecified", async () => {
-		const launchSpy = spyOn(dapModule, "selectLaunchAdapter").mockReturnValue(null);
+		const launchSpy = spyOn(dapModule, "selectLaunchAdapterResult").mockReturnValue({ kind: "none" });
 		try {
 			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-noadapter-"));
 			try {
@@ -708,6 +717,73 @@ describe("DebugTool launch validation", () => {
 			}
 		} finally {
 			launchSpy.mockRestore();
+		}
+	});
+
+	it("surfaces the dlv install hint when the canonical dlv command is not installed", async () => {
+		// Selection semantics for missing adapters are covered unmocked in
+		// dap-config.test.ts; this pins the tool-level error mapping for the
+		// canonical-command case, which cannot be reproduced deterministically
+		// against a host that may have dlv on PATH.
+		const launchSpy = spyOn(dapModule, "selectLaunchAdapterResult").mockReturnValue({
+			kind: "unavailable",
+			adapterName: "dlv",
+			command: "dlv",
+		});
+		try {
+			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-dlv-hint-"));
+			try {
+				await fs.writeFile(path.join(cwd, "main.go"), "package main\nfunc main() {}\n");
+				const session: ToolSession = {
+					cwd,
+					hasUI: false,
+					getSessionFile: () => null,
+					getSessionSpawns: () => "*",
+					settings: Settings.isolated({ "debug.enabled": true }),
+				};
+				const tool = new DebugTool(session);
+				await expect(tool.execute("call", { action: "launch", program: "main.go" })).rejects.toThrow(
+					/adapter 'dlv' matches this program but is not installed: install with 'go install github\.com\/go-delve\/delve\/cmd\/dlv@latest'/,
+				);
+			} finally {
+				await removeWithRetries(cwd);
+			}
+		} finally {
+			launchSpy.mockRestore();
+		}
+	});
+
+	it("points at dap.json instead of an install hint when an overridden dlv command is missing", async () => {
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-dlv-override-"));
+		try {
+			await fs.writeFile(path.join(cwd, "go.mod"), "module example.com/hello\n\ngo 1.22\n");
+			await fs.mkdir(path.join(cwd, "cmd", "hello"), { recursive: true });
+			// Pin dlv to an absolute missing path: selection fails deterministically
+			// regardless of a host-installed dlv, and installing dlv would not fix
+			// the pinned path — the error must point at the config, not reinstall.
+			await fs.writeFile(
+				path.join(cwd, "dap.json"),
+				JSON.stringify({ adapters: { dlv: { command: path.join(cwd, "tools", "dlv") } } }),
+			);
+			const session: ToolSession = {
+				cwd,
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({ "debug.enabled": true }),
+			};
+			const tool = new DebugTool(session);
+			// Both a .go file and a Go package directory route to the same
+			// configured-adapter-unavailable error (no lldb-dap fallback, no
+			// directory rejection).
+			await expect(tool.execute("call", { action: "launch", program: "main.go" })).rejects.toThrow(
+				/adapter 'dlv' matches this program but its configured executable was not found; check the 'dlv' entry in your DAP configuration/,
+			);
+			await expect(tool.execute("call", { action: "launch", program: path.join("cmd", "hello") })).rejects.toThrow(
+				/its configured executable was not found/,
+			);
+		} finally {
+			await removeWithRetries(cwd);
 		}
 	});
 });
