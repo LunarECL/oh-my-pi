@@ -7,6 +7,7 @@ describe("kagi login", () => {
 		let authInstructions: string | undefined;
 		let promptMessage: string | undefined;
 		let promptPlaceholder: string | undefined;
+		let promptSecret: boolean | undefined;
 
 		const apiKey = await loginKagi({
 			onAuth: info => {
@@ -16,6 +17,7 @@ describe("kagi login", () => {
 			onPrompt: async prompt => {
 				promptMessage = prompt.message;
 				promptPlaceholder = prompt.placeholder;
+				promptSecret = prompt.secret;
 				return "  KG_test_key  ";
 			},
 		});
@@ -26,6 +28,7 @@ describe("kagi login", () => {
 		expect(authInstructions).toContain("support@kagi.com");
 		expect(promptMessage).toBe("Paste your Kagi API key");
 		expect(promptPlaceholder).toBe("KG_...");
+		expect(promptSecret).toBe(true);
 		expect(apiKey).toBe("KG_test_key");
 	});
 

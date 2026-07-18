@@ -59,6 +59,7 @@ export async function loginAlibabaCodingPlan(options: OAuthController): Promise<
 	const apiKey = await options.onPrompt({
 		message: "Paste your Alibaba Coding Plan API key",
 		placeholder: "sk-...",
+		secret: true,
 	});
 
 	if (options.signal?.aborted) {

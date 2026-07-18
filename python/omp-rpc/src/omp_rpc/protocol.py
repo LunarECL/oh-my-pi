@@ -862,6 +862,7 @@ class ExtensionUiRequest:
     options: tuple[str, ...] | None = None
     message: str | None = None
     placeholder: str | None = None
+    secret: bool | None = None
     prefill: str | None = None
     timeout: int | None = None
     prompt_style: bool | None = None
@@ -1448,6 +1449,7 @@ def parse_extension_ui_request(payload: JsonObject) -> ExtensionUiRequest:
         ),
         message=_optional_str(payload, "message"),
         placeholder=_optional_str(payload, "placeholder"),
+        secret=_optional_bool(payload, "secret"),
         prefill=_optional_str(payload, "prefill"),
         timeout=_optional_int(payload, "timeout"),
         prompt_style=_optional_bool(payload, "promptStyle"),

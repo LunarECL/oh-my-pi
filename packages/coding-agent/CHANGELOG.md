@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- API-key and token login prompts now mask entered credentials in the provider selector and setup wizard. RPC input requests carry secret metadata so remote hosts can apply the same protection.
+
 ## [17.0.3] - 2026-07-17
 
 ### Changed

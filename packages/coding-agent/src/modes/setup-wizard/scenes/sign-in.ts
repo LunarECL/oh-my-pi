@@ -1,6 +1,6 @@
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
-import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
+import type { OAuthPrompt, OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import {
 	type Component,
 	type Focusable,
@@ -271,9 +271,10 @@ export class SignInTab implements SetupTab {
 		this.host.requestRender();
 	}
 
-	#showPrompt(prompt: { message: string; placeholder?: string }): Promise<string> {
+	#showPrompt(prompt: OAuthPrompt): Promise<string> {
 		this.#resolvePrompt("");
 		const input = new Input();
+		input.masked = prompt.secret ?? false;
 		const focusInput = new CopyablePromptInput(input, () => {
 			void this.#copyAuthUrl();
 		});

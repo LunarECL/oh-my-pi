@@ -45,6 +45,11 @@ export class KillRing {
 		}
 	}
 
+	/** Drop all entries (e.g. when the buffer crosses a secrecy boundary). */
+	clear(): void {
+		this.#ring.length = 0;
+	}
+
 	get length(): number {
 		return this.#ring.length;
 	}

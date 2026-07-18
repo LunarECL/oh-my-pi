@@ -18,6 +18,7 @@ export async function loginVllm(options: OAuthController): Promise<string> {
 	const apiKey = await options.onPrompt({
 		message: "Paste your vLLM API key (optional for local no-auth)",
 		placeholder: DEFAULT_LOCAL_TOKEN,
+		secret: true,
 		allowEmpty: true,
 	});
 	if (options.signal?.aborted) {

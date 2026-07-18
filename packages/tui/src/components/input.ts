@@ -30,6 +30,19 @@ export class Input implements Component, Focusable {
 	#useTerminalCursor = false;
 	/** Rendered before the editable area; set to "" for chrome-less embedding. */
 	prompt = "> ";
+	/** Render the value as bullets while preserving the raw submitted value. */
+	get masked(): boolean {
+		return this.#masked;
+	}
+
+	/** Toggling masking drops editing history so secret bytes never cross the boundary. */
+	set masked(masked: boolean) {
+		if (masked === this.#masked) return;
+		this.#masked = masked;
+		this.#clearHistory();
+	}
+
+	#masked = false;
 	onSubmit?: (value: string) => void;
 	onEscape?: () => void;
 
@@ -54,6 +67,20 @@ export class Input implements Component, Focusable {
 		this.#value = value;
 		// Callers seed or replace the value wholesale; typing continues at the end.
 		this.#cursor = value.length;
+	}
+
+	/** Clear the value and all editing history (undo stack, kill ring, paste buffer). */
+	reset(): void {
+		this.#value = "";
+		this.#cursor = 0;
+		this.#clearHistory();
+	}
+
+	#clearHistory(): void {
+		this.#undoStack.length = 0;
+		this.#killRing.clear();
+		this.#lastAction = null;
+		this.#pasteHandler = new BracketedPasteHandler();
 	}
 
 	setUseTerminalCursor(useTerminalCursor: boolean): void {
@@ -416,8 +443,9 @@ export class Input implements Component, Focusable {
 		}
 
 		const cursorIndex = this.#cursor;
+		const value = this.masked ? "•".repeat(this.#value.length) : this.#value;
 		// Ensure we always have a grapheme to invert at the cursor (space at end).
-		const displayValue = cursorIndex >= this.#value.length ? `${this.#value} ` : this.#value;
+		const displayValue = cursorIndex >= value.length ? `${value} ` : value;
 
 		const totalCols = visibleWidth(displayValue);
 		const cursorCols = visibleWidth(displayValue.slice(0, cursorIndex));

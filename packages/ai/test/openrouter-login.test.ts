@@ -50,7 +50,10 @@ describe("openrouter login wiring", () => {
 
 		await storage.login("openrouter", {
 			onAuth: () => {},
-			onPrompt: async () => "sk-or-validated",
+			onPrompt: async prompt => {
+				expect(prompt.secret).toBe(true);
+				return "sk-or-validated";
+			},
 			fetch: fetchMock,
 		});
 

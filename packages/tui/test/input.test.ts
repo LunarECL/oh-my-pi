@@ -191,6 +191,52 @@ describe("Input component", () => {
 		expect(input2.getValue()).toBe("xy");
 	});
 
+	it("masks rendered input without changing the submitted value", () => {
+		const secret = "sk-test-secret";
+		const input = new Input();
+		input.masked = true;
+		input.setValue(secret);
+
+		const rendered = Bun.stripANSI(input.render(40)[0] ?? "");
+		expect(rendered).not.toContain(secret);
+		expect(rendered).toContain("•".repeat(secret.length));
+
+		let submitted: string | undefined;
+		input.onSubmit = value => {
+			submitted = value;
+		};
+		input.handleInput("\n");
+		expect(submitted).toBe(secret);
+	});
+
+	it("drops undo and kill-ring history when masking toggles so secrets cannot be resurrected", () => {
+		const secret = "sk-live-secret";
+		const input = new Input();
+		input.masked = true;
+		input.handleInput(secret);
+		input.handleInput("\x15"); // Ctrl+U — kill to line start (secret lands in the kill ring)
+		expect(input.getValue()).toBe("");
+
+		input.masked = false;
+		input.handleInput("\x19"); // Ctrl+Y — yank
+		input.handleInput("\x1f"); // Ctrl+_ — undo
+		expect(input.getValue()).toBe("");
+		expect(Bun.stripANSI(input.render(40)[0] ?? "")).not.toContain(secret);
+	});
+
+	it("reset clears the value and all editing history", () => {
+		const input = new Input();
+		input.handleInput("sk-old-secret");
+		input.handleInput("\x15"); // kill to line start
+		input.handleInput("retyped");
+		input.reset();
+
+		expect(input.getValue()).toBe("");
+		input.handleInput("\x19"); // yank
+		input.handleInput("\x1f"); // undo
+		expect(input.getValue()).toBe("");
+	});
+
 	it("never renders a line wider than the terminal width (wide chars)", () => {
 		const input = new Input();
 		input.focused = true;

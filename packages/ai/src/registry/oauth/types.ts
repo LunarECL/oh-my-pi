@@ -28,6 +28,8 @@ export type OAuthPrompt = {
 	message: string;
 	placeholder?: string;
 	allowEmpty?: boolean;
+	/** Whether UIs must conceal the entered value while retaining it for submission. */
+	secret?: boolean;
 };
 
 export type OAuthAuthInfo = {

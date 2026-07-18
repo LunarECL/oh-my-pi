@@ -24,6 +24,7 @@ export async function loginKagi(options: OAuthController): Promise<string> {
 	const apiKey = await options.onPrompt({
 		message: "Paste your Kagi API key",
 		placeholder: "KG_...",
+		secret: true,
 	});
 
 	if (options.signal?.aborted) {

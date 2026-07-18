@@ -150,6 +150,21 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertTrue(notification.requires_response())
         self.assertFalse(notification.is_passive())
 
+    def test_parse_secret_input_request(self) -> None:
+        notification = parse_notification(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-secret",
+                "method": "input",
+                "title": "Paste your API key",
+                "placeholder": "sk-...",
+                "secret": True,
+            }
+        )
+
+        self.assertIsInstance(notification, ExtensionUiRequest)
+        self.assertTrue(notification.secret)
+
     def test_parse_todo_reminder_notification(self) -> None:
         notification = parse_notification(
             {

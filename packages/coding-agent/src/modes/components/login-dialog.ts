@@ -117,7 +117,10 @@ export class LoginDialogComponent extends Container {
 			this.#contentContainer.addChild(this.#input);
 			this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 1, 0));
 		}
-		this.#input.setValue("");
+		this.#input.masked = false;
+		// Reset drops the value and editing history; a secret from an earlier
+		// masked prompt must not be resurrectable via undo/yank once unmasked.
+		this.#input.reset();
 		this.#tui.requestRender();
 
 		const { promise, resolve, reject } = Promise.withResolvers<string>();
@@ -130,7 +133,7 @@ export class LoginDialogComponent extends Container {
 	 * Called by onPrompt callback - show prompt and wait for input
 	 * Note: Does NOT clear content, appends to existing (preserves URL from showAuth)
 	 */
-	showPrompt(message: string, placeholder?: string): Promise<string> {
+	showPrompt(message: string, placeholder?: string, secret = false): Promise<string> {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("text", message), 1, 0));
 		if (placeholder) {
@@ -141,7 +144,8 @@ export class LoginDialogComponent extends Container {
 		}
 		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel, Enter to submit)"), 1, 0));
 
-		this.#input.setValue("");
+		this.#input.masked = secret;
+		this.#input.reset();
 		this.#tui.requestRender();
 
 		const { promise, resolve, reject } = Promise.withResolvers<string>();

@@ -335,6 +335,7 @@ export type RpcExtensionUIRequest =
 			method: "input";
 			title: string;
 			placeholder?: string;
+			secret?: boolean;
 			timeout?: number;
 	  }
 	| {

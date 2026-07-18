@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added masked rendering to the single-line `Input` component while preserving its raw submitted value. Toggling `masked` drops undo/kill-ring history so secret bytes cannot be resurrected across a secrecy boundary, and the new `Input.reset()` clears the value plus all editing history.
+
 ## [17.0.3] - 2026-07-17
 
 ### Fixed

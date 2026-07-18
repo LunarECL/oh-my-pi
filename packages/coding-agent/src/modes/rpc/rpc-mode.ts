@@ -737,11 +737,12 @@ export async function runRpcMode(
 			title: string,
 			placeholder?: string,
 			dialogOptions?: ExtensionUIDialogOptions,
+			secret = false,
 		): Promise<string | undefined> {
 			return this.#createDialogPromise(
 				dialogOptions,
 				undefined,
-				{ method: "input", title, placeholder, timeout: dialogOptions?.timeout },
+				{ method: "input", title, placeholder, secret: secret || undefined, timeout: dialogOptions?.timeout },
 				response => parseValueDialogResponse(response, dialogOptions),
 			);
 		}
@@ -1324,7 +1325,10 @@ export async function runRpcMode(
 									),
 								);
 							}
-							return (await uiCtx.input(prompt.message, prompt.placeholder, { timeout: 600_000 })) ?? "";
+							return (
+								(await uiCtx.input(prompt.message, prompt.placeholder, { timeout: 600_000 }, prompt.secret)) ??
+								""
+							);
 						},
 					});
 					await session.modelRegistry.refresh();

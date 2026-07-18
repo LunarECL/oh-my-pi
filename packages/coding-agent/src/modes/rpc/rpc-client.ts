@@ -738,7 +738,11 @@ export class RpcClient {
 		providerId: string,
 		options?: {
 			onOpenUrl?: (url: string, instructions?: string, launchUrl?: string) => void;
-			onManualCodeInput?: (prompt: { title: string; placeholder?: string }) => string | Promise<string>;
+			onManualCodeInput?: (prompt: {
+				title: string;
+				placeholder?: string;
+				secret?: boolean;
+			}) => string | Promise<string>;
 		},
 	): Promise<{ providerId: string }> {
 		const { onManualCodeInput, onOpenUrl } = options ?? {};
@@ -750,7 +754,9 @@ export class RpcClient {
 							return;
 						}
 						if (req.method !== "input" || !onManualCodeInput) return;
-						void Promise.resolve(onManualCodeInput({ title: req.title, placeholder: req.placeholder }))
+						void Promise.resolve(
+							onManualCodeInput({ title: req.title, placeholder: req.placeholder, secret: req.secret }),
+						)
 							.then(value => {
 								this.#writeFrame({
 									type: "extension_ui_response",

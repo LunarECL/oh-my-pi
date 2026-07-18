@@ -26,6 +26,7 @@ export async function loginOllama(options: OAuthController): Promise<string> {
 	const apiKey = await options.onPrompt({
 		message: "Paste your Ollama API key/token (optional)",
 		placeholder: "ollama-local",
+		secret: true,
 		allowEmpty: true,
 	});
 

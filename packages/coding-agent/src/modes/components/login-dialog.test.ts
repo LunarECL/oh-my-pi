@@ -53,4 +53,25 @@ describe("LoginDialogComponent manual code input", () => {
 		dialog.handleInput("\r");
 		expect(await second).toBe(url);
 	});
+
+	it("cannot resurrect a masked secret in a later unmasked prompt via undo or yank", async () => {
+		const secret = "sk-live-secret";
+		const dialog = makeDialog();
+
+		const keyPrompt = dialog.showPrompt("Paste your API key", "sk-...", true);
+		dialog.pasteText(secret);
+		dialog.handleInput("\x15"); // Ctrl+U — kill to line start (secret lands in the kill ring)
+		dialog.pasteText(secret);
+		dialog.handleInput("\r");
+		expect(await keyPrompt).toBe(secret);
+
+		const manual = dialog.showManualInput("Paste the authorization code:");
+		dialog.handleInput("\x1f"); // Ctrl+_ — undo
+		dialog.handleInput("\x19"); // Ctrl+Y — yank
+		expect(Bun.stripANSI(dialog.render(80).join("\n"))).not.toContain(secret);
+
+		dialog.pasteText("THECODE");
+		dialog.handleInput("\r");
+		expect(await manual).toBe("THECODE");
+	});
 });

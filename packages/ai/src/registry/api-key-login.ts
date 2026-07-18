@@ -64,6 +64,7 @@ export function createApiKeyLogin(config: ApiKeyLoginConfig): (options: OAuthCon
 		const apiKey = await options.onPrompt({
 			message: config.promptMessage,
 			placeholder: config.placeholder,
+			secret: true,
 		});
 
 		if (options.signal?.aborted) {

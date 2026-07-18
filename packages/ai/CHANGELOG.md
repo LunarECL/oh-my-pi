@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- OAuth prompt metadata can flag secret values, and all API-key and token login prompts now use it so interactive frontends can mask credentials without altering the submitted value.
+
 ## [17.0.3] - 2026-07-17
 
 ### Fixed

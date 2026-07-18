@@ -140,4 +140,59 @@ describe("SignInTab", () => {
 			await loginGate.promise;
 		}
 	});
+
+	it("masks secret prompts while returning the raw value", async () => {
+		const secret = "sk-setup-secret";
+		const submitted = Promise.withResolvers<string>();
+		let focusTarget: Component | undefined;
+
+		const authStorage = {
+			has: (_providerId: string) => false,
+			hasAuth: (_providerId: string) => false,
+			getCredentialOrigin: (_providerId: string) => undefined,
+			async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
+				submitted.resolve(await ctrl.onPrompt({ message: "Paste your API key", secret: true }));
+			},
+		} as unknown as AuthStorage;
+
+		const host = {
+			ctx: {
+				openInBrowser(): void {},
+				session: {
+					modelRegistry: {
+						authStorage,
+						async refresh(): Promise<void> {},
+					},
+				},
+			},
+			requestRender(): void {},
+			finish(): void {},
+			setFocus(component: Component | null): void {
+				focusTarget = component ?? undefined;
+			},
+			restoreFocus(): void {},
+		} as unknown as SetupSceneHost;
+
+		const tab = new SignInTab(host);
+		try {
+			for (const char of "anthropic") {
+				tab.handleInput(char);
+			}
+			tab.handleInput("\n");
+			await Promise.resolve();
+
+			expect(focusTarget).toBeDefined();
+			for (const char of secret) {
+				focusTarget?.handleInput?.(char);
+			}
+			const rendered = Bun.stripANSI(tab.render(80).join("\n"));
+			expect(rendered).not.toContain(secret);
+			expect(rendered).toContain("•".repeat(secret.length));
+
+			focusTarget?.handleInput?.("\n");
+			await expect(submitted.promise).resolves.toBe(secret);
+		} finally {
+			tab.dispose();
+		}
+	});
 });

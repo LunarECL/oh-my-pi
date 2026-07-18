@@ -125,4 +125,19 @@ describe("SelectorController login", () => {
 
 		await expect(prompt).resolves.toBe("OMP_PASTE_TEST_123");
 	});
+
+	it("masks secret prompts without changing the submitted value", async () => {
+		const tui = { requestRender: vi.fn() } as unknown as TUI;
+		const dialog = new LoginDialogComponent(tui, "openrouter", vi.fn());
+		const secret = "sk-dialog-secret";
+		const prompt = dialog.showPrompt("Paste your API key", "sk-...", true);
+
+		dialog.pasteText(secret);
+		const rendered = Bun.stripANSI(renderPresented([dialog]));
+		expect(rendered).not.toContain(secret);
+		expect(rendered).toContain("•".repeat(secret.length));
+
+		dialog.handleInput("\n");
+		await expect(prompt).resolves.toBe(secret);
+	});
 });

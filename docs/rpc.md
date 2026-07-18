@@ -419,6 +419,10 @@ Extensions in RPC mode use request/response UI frames.
 - `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`
 - `open_url` (emitted by RPC login flows)
 
+For `input` requests, optional `"secret": true` means the host must mask the
+entered value and avoid logging it. The corresponding response still carries the
+raw value needed by the provider login flow.
+
 Runtime note:
 
 - Automatic session title generation is disabled in RPC mode, and `setTitle` UI
